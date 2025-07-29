@@ -59,10 +59,19 @@ class NotesHome extends StatefulWidget {
   State<NotesHome> createState() => _NotesHomeState();
 }
 
+class NoteSearchResult {
+  final FileSystemEntity file;
+  final int? matchLine;
+  final String? matchText;
+  final String? firstLine;
+
+  NoteSearchResult(this.file, {this.matchLine, this.matchText, this.firstLine});
+}
+
 class _NotesHomeState extends State<NotesHome> {
   String? folderPath;
   List<FileSystemEntity> notes = [];
-  List<FileSystemEntity> filteredNotes = [];
+  List<NoteSearchResult> filteredNotes = [];
   bool loading = true;
   String searchQuery = '';
 
@@ -70,6 +79,53 @@ class _NotesHomeState extends State<NotesHome> {
   void initState() {
     super.initState();
     _loadFolder();
+  }
+
+  List<TextSpan> _buildSubtitleSpans(
+    String date,
+    int? matchLine,
+    String? matchText,
+    String query,
+    String? firstLine,
+  ) {
+    if (query.isEmpty) {
+      // No search: show first line of file
+      final text = firstLine?.trim();
+      return [TextSpan(text: '$date     ${text ?? ''}')];
+    }
+
+    if (matchText == null || query.isEmpty) {
+      return [TextSpan(text: '$date     ')];
+    }
+
+    final lowerMatch = matchText.toLowerCase();
+    final lowerQuery = query.toLowerCase();
+    final matchIndex = lowerMatch.indexOf(lowerQuery);
+
+    if (matchIndex == -1) {
+      return [TextSpan(text: '$date     $matchText')];
+    }
+
+    try {
+      final before = matchText.substring(0, matchIndex);
+      final match = matchText.substring(matchIndex, matchIndex + query.length);
+      final after = matchText.substring(matchIndex + query.length);
+
+      return [
+        TextSpan(text: '$date     '),
+        TextSpan(text: before),
+        TextSpan(
+          text: match,
+          style: const TextStyle(
+            color: CupertinoColors.activeBlue,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        TextSpan(text: after),
+      ];
+    } catch (e) {
+      return [TextSpan(text: '$date     $matchText')];
+    }
   }
 
   Future<void> _loadFolder() async {
@@ -106,12 +162,16 @@ class _NotesHomeState extends State<NotesHome> {
 
   void _loadNotes(String path) {
     final dir = Directory(path);
-    final files = dir.listSync().where((f) => f.path.endsWith('.md')).toList()
-      ..sort(
-        (a, b) => File(
-          b.path,
-        ).lastModifiedSync().compareTo(File(a.path).lastModifiedSync()),
-      );
+    final files =
+        dir.listSync().where((f) {
+          final isFile = FileSystemEntity.isFileSync(f.path);
+          final isMd = f.path.endsWith('.md');
+          return isFile && isMd;
+        }).toList()..sort(
+          (a, b) => File(
+            b.path,
+          ).lastModifiedSync().compareTo(File(a.path).lastModifiedSync()),
+        );
     setState(() {
       notes = files;
       _filterNotes();
@@ -121,15 +181,46 @@ class _NotesHomeState extends State<NotesHome> {
 
   void _filterNotes() {
     if (searchQuery.isEmpty) {
-      filteredNotes = List.from(notes);
-    } else {
-      filteredNotes = notes.where((note) {
+      filteredNotes = notes.map((note) {
         final file = File(note.path);
-        final name = file.uri.pathSegments.last.toLowerCase();
-        final content = file.readAsStringSync().toLowerCase();
-        return name.contains(searchQuery.toLowerCase()) ||
-            content.contains(searchQuery.toLowerCase());
+        final content = file.readAsStringSync();
+        final lines = content
+            .split('\n')
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty)
+            .toList();
+        final firstLine = lines.isNotEmpty ? lines.first : '';
+        return NoteSearchResult(note, firstLine: firstLine);
       }).toList();
+    } else {
+      final query = searchQuery.toLowerCase();
+      filteredNotes = notes
+          .map((note) {
+            final file = File(note.path);
+            final content = file.readAsStringSync();
+            final lines = content.split('\n');
+
+            for (int i = 0; i < lines.length; i++) {
+              if (lines[i].toLowerCase().contains(query)) {
+                return NoteSearchResult(
+                  note,
+                  matchLine: i + 1,
+                  matchText: lines[i].trim(),
+                );
+              }
+            }
+
+            final nameMatch = file.uri.pathSegments.last.toLowerCase().contains(
+              query,
+            );
+            if (nameMatch) {
+              return NoteSearchResult(note);
+            }
+
+            return null;
+          })
+          .whereType<NoteSearchResult>()
+          .toList();
     }
   }
 
@@ -253,59 +344,74 @@ class _NotesHomeState extends State<NotesHome> {
                           ),
                         ],
                       ),
-                      child: CupertinoListSection.insetGrouped(
-                        hasLeading: false,
-                        margin: EdgeInsets.zero,
-                        children: filteredNotes.map((fileEntity) {
-                          final file = File(fileEntity.path);
-                          final lines = file
-                              .readAsLinesSync()
-                              .map((line) => line.trim())
-                              .where((line) => line.isNotEmpty)
-                              .toList();
-
-                          final fileName = file.uri.pathSegments.last
-                              .replaceAll('.md', '');
-                          final secondLine = lines.length > 1
-                              ? lines[0].replaceAll(RegExp(r'^#+\s*'), '')
-                              : 'Kein zusätzlicher Text';
-
-                          final modified = file.lastModifiedSync();
-                          final formattedDate = DateFormat(
-                            'dd.MM.yyyy',
-                          ).format(modified);
-                          final subtitleText = secondLine.isNotEmpty
-                              ? '$formattedDate  $secondLine'
-                              : formattedDate;
-
-                          return CupertinoListTile.notched(
-                            title: Text(fileName),
-                            subtitle: Text(
-                              subtitleText,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: CupertinoColors.inactiveGray,
-                              ),
-                            ),
-                            onTap: () {
-                              Navigator.of(context).push(
-                                CupertinoPageRoute(
-                                  builder: (context) => NoteView(
-                                    file: file,
-                                    initialContent: file.readAsStringSync(),
-                                    onSave: () {
-                                      setState(() {});
-                                    },
-                                    createNew: false,
-                                  ),
+                      child: filteredNotes.isEmpty
+                          ? const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Text(
+                                'Keine Treffer gefunden.',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color: CupertinoColors.inactiveGray,
                                 ),
-                              );
-                            },
-                          );
-                        }).toList(),
-                      ),
+                              ),
+                            )
+                          : CupertinoListSection.insetGrouped(
+                              hasLeading: false,
+                              margin: EdgeInsets.zero,
+                              children: filteredNotes.map((result) {
+                                final file = File(result.file.path);
+                                final fileName = file.uri.pathSegments.last
+                                    .replaceAll('.md', '');
+                                final modified = file.lastModifiedSync();
+                                final formattedDate = DateFormat(
+                                  'dd.MM.yyyy',
+                                ).format(modified);
+
+                                String subtitleText = formattedDate;
+                                if (result.matchText != null &&
+                                    result.matchLine != null) {
+                                  subtitleText +=
+                                      '  (Zeile ${result.matchLine}): ${result.matchText}';
+                                }
+
+                                return CupertinoListTile.notched(
+                                  title: Text(fileName),
+                                  subtitle: Text.rich(
+                                    TextSpan(
+                                      children: _buildSubtitleSpans(
+                                        formattedDate,
+                                        result.matchLine,
+                                        result.matchText,
+                                        searchQuery,
+                                        result.firstLine,
+                                      ),
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        color: CupertinoColors.inactiveGray,
+                                      ),
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+
+                                  onTap: () {
+                                    Navigator.of(context).push(
+                                      CupertinoPageRoute(
+                                        builder: (context) => NoteView(
+                                          file: file,
+                                          initialContent: file
+                                              .readAsStringSync(),
+                                          onSave: () {
+                                            setState(() {});
+                                          },
+                                          createNew: false,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                );
+                              }).toList(),
+                            ),
                     ),
                   ),
                 ),
