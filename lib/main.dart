@@ -98,18 +98,16 @@ class _NotesHomeState extends State<NotesHome> {
       return [TextSpan(text: '$date     ')];
     }
 
-    final lowerMatch = matchText.toLowerCase();
+    final lowerMatch = cleanText(matchText).toLowerCase();
     final lowerQuery = query.toLowerCase();
     final matchIndex = lowerMatch.indexOf(lowerQuery);
 
-    if (matchIndex == -1) {
-      return [TextSpan(text: '$date     $matchText')];
-    }
-
     try {
-      final before = matchText.substring(0, matchIndex);
-      final match = matchText.substring(matchIndex, matchIndex + query.length);
-      final after = matchText.substring(matchIndex + query.length);
+      final before = cleanText(matchText).substring(0, matchIndex);
+      final match = cleanText(
+        matchText,
+      ).substring(matchIndex, matchIndex + query.length);
+      final after = cleanText(matchText).substring(matchIndex + query.length);
 
       return [
         TextSpan(text: '$date     '),
@@ -162,19 +160,25 @@ class _NotesHomeState extends State<NotesHome> {
 
   void _loadNotes(String path) {
     final dir = Directory(path);
-    final files =
-        dir.listSync().where((f) {
-          final isFile = FileSystemEntity.isFileSync(f.path);
-          final isMd = f.path.endsWith('.md');
-          return isFile && isMd;
-        }).toList()..sort(
-          (a, b) => File(
-            b.path,
-          ).lastModifiedSync().compareTo(File(a.path).lastModifiedSync()),
-        );
+
+    // Alle .md-Dateien im Ordner
+    final files = dir
+        .listSync()
+        .where(
+          (f) => FileSystemEntity.isFileSync(f.path) && f.path.endsWith('.md'),
+        )
+        .toList();
+
+    // Sortiere **immer nach Änderungsdatum**, neueste zuerst
+    files.sort((a, b) {
+      final aTime = File(a.path).lastModifiedSync();
+      final bTime = File(b.path).lastModifiedSync();
+      return bTime.compareTo(aTime); // b vor a → neueste zuerst
+    });
+
     setState(() {
       notes = files;
-      _filterNotes();
+      _filterNotes(); // Filter anwenden, Reihenfolge bleibt erhalten
       loading = false;
     });
   }
@@ -238,37 +242,12 @@ class _NotesHomeState extends State<NotesHome> {
     );
   }
 
-  void _openNote(FileSystemEntity note) async {
-    final content = await File(note.path).readAsString();
-    Navigator.of(context).push(
-      CupertinoPageRoute(
-        builder: (_) => NoteView(
-          file: File(note.path),
-          initialContent: content,
-          onSave: () => _loadNotes(folderPath!),
-          createNew: false,
-        ),
-      ),
-    );
-  }
-
-  void _deleteNote(FileSystemEntity note) async {
-    await File(note.path).delete();
-    _loadNotes(folderPath!);
-  }
-
-  Widget _buildSearchBar() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: CupertinoSearchTextField(
-        placeholder: 'Search',
-        onChanged: (value) {
-          setState(() {
-            searchQuery = value;
-            _filterNotes();
-          });
-        },
-      ),
+  String cleanText(String text) {
+    return text.replaceAllMapped(
+      RegExp(
+        r'\\([^\w\s])',
+      ), // \ vor allen Zeichen, die **kein Buchstabe oder Zahl oder Leerzeichen** sind
+      (match) => match.group(1)!,
     );
   }
 
@@ -367,13 +346,6 @@ class _NotesHomeState extends State<NotesHome> {
                                   'dd.MM.yyyy',
                                 ).format(modified);
 
-                                String subtitleText = formattedDate;
-                                if (result.matchText != null &&
-                                    result.matchLine != null) {
-                                  subtitleText +=
-                                      '  (Zeile ${result.matchLine}): ${result.matchText}';
-                                }
-
                                 return CupertinoListTile.notched(
                                   title: Text(fileName),
                                   subtitle: Text.rich(
@@ -402,7 +374,13 @@ class _NotesHomeState extends State<NotesHome> {
                                           initialContent: file
                                               .readAsStringSync(),
                                           onSave: () {
-                                            setState(() {});
+                                            setState(() {
+                                              if (folderPath != null) {
+                                                _loadNotes(
+                                                  folderPath!,
+                                                ); // neu laden & sortieren
+                                              }
+                                            });
                                           },
                                           createNew: false,
                                         ),
@@ -535,6 +513,12 @@ class _NoteViewState extends State<NoteView> {
       final converter = mdq.DeltaToMarkdown();
       String markdown = converter.convert(_controller.document.toDelta());
 
+      // Entfernt Backslashes vor allen typischen Markdown-Sonderzeichen
+      markdown = markdown.replaceAllMapped(
+        RegExp(r'\\([*_{}\[\]()#+\-!<>"&\.])'), // Punkt hinzugefügt
+        (match) => match.group(1)!,
+      );
+
       final currentTitle = _getCurrentTitle();
       if (currentTitle.isEmpty) return;
 
@@ -558,15 +542,15 @@ class _NoteViewState extends State<NoteView> {
       }
 
       await widget.file.writeAsString(markdown);
-      widget.onSave();
 
       setState(() {
         saving = false;
         title = currentTitle;
       });
+      widget.onSave();
     } catch (e) {
       setState(() => saving = false);
-      // Fehlerbehandlung, z. B. Dialog anzeigen
+      // Fehlerbehandlung
     }
   }
 
