@@ -127,30 +127,32 @@ class _NotesHomeState extends State<NotesHome> {
   }
 
   Future<void> _loadFolder() async {
-    loading = false;
-    // final prefs = await SharedPreferences.getInstance();
-    // final path = prefs.getString('vault_folder');
+    setState(() => loading = true);
 
-    // developer.log('Lade vault_folder aus SharedPreferences: $path');
+    final prefs = await SharedPreferences.getInstance();
+    final savedPath = prefs.getString('vault_folder');
 
-    // if (path != null && Directory(path).existsSync()) {
-    //   setState(() {
-    //     folderPath = path;
-    //   });
-    //   _loadNotes(path);
-    // } else {
-    //   developer.log('Kein gültiger Vault-Pfad gefunden oder existiert nicht.');
-    //   setState(() {
-    //     loading = false;
-    //   });
-    // }
+    developer.log('Loaded vault_folder from SharedPreferences: $savedPath');
+
+    if (savedPath != null && Directory(savedPath).existsSync()) {
+      setState(() {
+        folderPath = savedPath;
+      });
+      _loadNotes(savedPath);
+    } else {
+      // No saved folder or folder doesn't exist
+      setState(() {
+        folderPath = null;
+        loading = false;
+      });
+    }
   }
 
   Future<void> _pickFolder() async {
     String? selected = await FilePicker.platform.getDirectoryPath();
     if (selected != null) {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('vault_folder', selected);
+      await prefs.setString('vault_folder', selected); // Save path
       setState(() {
         folderPath = selected;
       });
@@ -296,7 +298,12 @@ class _NotesHomeState extends State<NotesHome> {
                     vertical: 8,
                   ),
                   child: CupertinoSearchTextField(
-                    placeholder: 'Search',
+                    placeholder: 'Search notes...',
+                    backgroundColor: CupertinoColors.systemGrey5,
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 10,
+                      horizontal: 16,
+                    ),
                     onChanged: (value) {
                       setState(() {
                         searchQuery = value;
@@ -347,7 +354,14 @@ class _NotesHomeState extends State<NotesHome> {
                                 ).format(modified);
 
                                 return CupertinoListTile.notched(
-                                  title: Text(fileName),
+                                  title: Text(
+                                    fileName,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+
                                   subtitle: Text.rich(
                                     TextSpan(
                                       children: _buildSubtitleSpans(
@@ -398,12 +412,34 @@ class _NotesHomeState extends State<NotesHome> {
 
             // Floating Action Button rechts unten
             Positioned(
-              right: 16,
-              bottom: 16,
-              child: FloatingActionButton(
-                onPressed: _createNote,
-                backgroundColor: Colors.black,
-                child: const Icon(CupertinoIcons.square_pencil),
+              right: 20,
+              bottom: 20,
+              child: GestureDetector(
+                onTap: _createNote,
+                child: Container(
+                  width: 60,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Colors.black, Colors.grey],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.2),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    CupertinoIcons.square_pencil,
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                ),
               ),
             ),
           ],
@@ -447,12 +483,10 @@ class _NoteViewState extends State<NoteView> {
     super.initState();
     _focusNode = FocusNode();
     _focusNode.addListener(_handleFocusChange);
-    if (widget.createNew) {
-      title = "Neue Notiz";
-    } else {
-      final fileName = widget.file.uri.pathSegments.last.replaceAll('.md', '');
-      title = fileName.isNotEmpty ? fileName : 'Neue Notiz';
-    }
+    title = widget.createNew
+        ? "Neue Notiz"
+        : widget.file.uri.pathSegments.last.replaceAll('.md', '');
+    if (title.isEmpty) title = 'Untitled';
 
     final converter = mdq.MarkdownToDelta(markdownDocument: md.Document());
     final delta = converter.convert(widget.initialContent);
@@ -469,7 +503,6 @@ class _NoteViewState extends State<NoteView> {
     setState(() {
       _isToolbarVisible =
           _focusNode.hasFocus || !_controller.selection.isCollapsed;
-      developer.log('Focus changed: _isToolbarVisible = $_isToolbarVisible');
     });
   }
 
@@ -498,10 +531,10 @@ class _NoteViewState extends State<NoteView> {
     if (widget.file.path != newPath && !File(newPath).existsSync()) {
       await widget.file.rename(newPath);
       setState(() {
-        widget.file = File(newPath); // ACHTUNG: ggf. final entfernen!
+        widget.file = File(newPath);
         title = newTitle;
       });
-      widget.onSave(); // damit die Liste aktualisiert wird
+      widget.onSave();
     }
   }
 
@@ -513,16 +546,14 @@ class _NoteViewState extends State<NoteView> {
       final converter = mdq.DeltaToMarkdown();
       String markdown = converter.convert(_controller.document.toDelta());
 
-      // Entfernt Backslashes vor allen typischen Markdown-Sonderzeichen
       markdown = markdown.replaceAllMapped(
-        RegExp(r'\\([*_{}\[\]()#+\-!<>"&\.])'), // Punkt hinzugefügt
+        RegExp(r'\\([*_{}\[\]()#+\-!<>"&\.])'),
         (match) => match.group(1)!,
       );
 
       final currentTitle = _getCurrentTitle();
       if (currentTitle.isEmpty) return;
 
-      // Entferne erste Zeile, wenn sie dem Titel entspricht
       final lines = markdown.split('\n');
       if (widget.createNew &&
           lines.isNotEmpty &&
@@ -532,7 +563,6 @@ class _NoteViewState extends State<NoteView> {
         markdown = lines.join('\n').trimLeft();
       }
 
-      // Pfad festlegen, falls neue Datei
       if (widget.createNew &&
           widget.folderPath != null &&
           widget.file.path.isEmpty) {
@@ -550,7 +580,6 @@ class _NoteViewState extends State<NoteView> {
       widget.onSave();
     } catch (e) {
       setState(() => saving = false);
-      // Fehlerbehandlung
     }
   }
 
@@ -569,7 +598,7 @@ class _NoteViewState extends State<NoteView> {
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
         leading: GestureDetector(
-          child: Icon(CupertinoIcons.back),
+          child: const Icon(CupertinoIcons.back),
           onTap: () {
             _save();
             setState(() => editing = false);
@@ -585,25 +614,56 @@ class _NoteViewState extends State<NoteView> {
         child: Column(
           children: [
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
+              child: Container(
+                padding: const EdgeInsets.all(20),
+                color: CupertinoColors.systemGrey6,
                 child: quill.QuillEditor.basic(
                   controller: _controller,
                   focusNode: _focusNode,
                   config: quill.QuillEditorConfig(
-                    placeholder: 'Start writing your note...',
+                    placeholder: 'Title',
                     customStyles: quill.DefaultStyles(
-                      paragraph: quill.DefaultTextBlockStyle(
+                      placeHolder: quill.DefaultTextBlockStyle(
                         const TextStyle(
-                          color: CupertinoColors.black,
-                          fontWeight: FontWeight.normal,
+                          color: CupertinoColors
+                              .placeholderText, // dezentes Apple-Grau
                           fontSize: 16,
+                          fontWeight: FontWeight.normal,
+                          fontStyle: FontStyle
+                              .italic, // optional für leichte Apple-Note
                         ),
                         const quill.HorizontalSpacing(0, 0),
-                        const quill.VerticalSpacing(0, 0),
+                        const quill.VerticalSpacing(6, 0),
                         const quill.VerticalSpacing(0, 0),
                         null,
                       ),
+
+                      color: Colors.black,
+
+                      paragraph: quill.DefaultTextBlockStyle(
+                        const TextStyle(
+                          color: CupertinoColors.black,
+                          fontSize: 16,
+                          height: 1.5,
+                        ),
+                        const quill.HorizontalSpacing(0, 0),
+                        const quill.VerticalSpacing(6, 0),
+                        const quill.VerticalSpacing(0, 0),
+                        null,
+                      ),
+                      lists: quill.DefaultListBlockStyle(
+                        const TextStyle(
+                          color:
+                              CupertinoColors.black, // **Text + Bullet-Farbe**
+                          fontSize: 16,
+                        ),
+                        const quill.HorizontalSpacing(10, 0),
+                        const quill.VerticalSpacing(4, 0),
+                        const quill.VerticalSpacing(0, 0),
+                        const BoxDecoration(), // optional Hintergrund
+                        null, // Kein Checkbox Builder
+                      ),
+
                       h1: quill.DefaultTextBlockStyle(
                         const TextStyle(
                           color: CupertinoColors.black,
@@ -611,54 +671,30 @@ class _NoteViewState extends State<NoteView> {
                           fontWeight: FontWeight.bold,
                         ),
                         const quill.HorizontalSpacing(0, 0),
-                        const quill.VerticalSpacing(8, 0),
+                        const quill.VerticalSpacing(12, 0),
                         const quill.VerticalSpacing(0, 0),
                         null,
                       ),
                       h2: quill.DefaultTextBlockStyle(
                         const TextStyle(
-                          color: Colors.black54,
+                          color: CupertinoColors.darkBackgroundGray,
                           fontSize: 28,
                           fontWeight: FontWeight.w600,
                         ),
                         const quill.HorizontalSpacing(0, 0),
-                        const quill.VerticalSpacing(6, 0),
+                        const quill.VerticalSpacing(10, 0),
                         const quill.VerticalSpacing(0, 0),
                         null,
                       ),
                       h3: quill.DefaultTextBlockStyle(
                         const TextStyle(
                           color: CupertinoColors.black,
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w600,
                         ),
                         const quill.HorizontalSpacing(0, 0),
                         const quill.VerticalSpacing(8, 0),
                         const quill.VerticalSpacing(0, 0),
-                        null,
-                      ),
-                      h4: quill.DefaultTextBlockStyle(
-                        const TextStyle(
-                          color: CupertinoColors.black,
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        const quill.HorizontalSpacing(0, 0),
-                        const quill.VerticalSpacing(8, 0),
-                        const quill.VerticalSpacing(0, 0),
-                        null,
-                      ),
-                      // Füge den Stil für Listen hinzu
-                      lists: quill.DefaultListBlockStyle(
-                        const TextStyle(
-                          color: CupertinoColors
-                              .black, // Das gilt für Text UND Bullet
-                          fontSize: 16,
-                        ),
-                        const quill.HorizontalSpacing(0, 0),
-                        const quill.VerticalSpacing(4, 0),
-                        const quill.VerticalSpacing(0, 0),
-                        null,
                         null,
                       ),
                     ),
@@ -668,9 +704,17 @@ class _NoteViewState extends State<NoteView> {
             ),
             if (_isToolbarVisible)
               Container(
-                height: 44,
+                height: 50,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
                 decoration: BoxDecoration(
-                  color: CupertinoColors.systemGrey6,
+                  color: CupertinoColors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 4,
+                      offset: const Offset(0, -2),
+                    ),
+                  ],
                   border: Border(
                     top: BorderSide(color: CupertinoColors.separator),
                   ),
@@ -682,34 +726,15 @@ class _NoteViewState extends State<NoteView> {
                     showItalicButton: true,
                     showUnderLineButton: true,
                     showStrikeThrough: true,
-                    showInlineCode: false,
-                    showColorButton: false,
-                    showBackgroundColorButton: false,
-                    showClearFormat: false,
                     showHeaderStyle: true,
                     showListNumbers: true,
                     showListBullets: true,
-                    showListCheck: false,
-                    showCodeBlock: false,
-                    showQuote: false,
-                    showIndent: false,
-                    showLink: false,
-                    showUndo: false,
-                    showRedo: false,
-                    showDirection: false,
-                    showAlignmentButtons: false,
-                    showFontFamily: false,
-                    showFontSize: false,
-                    showDividers: false,
-                    showSearchButton: false,
-                    showSuperscript: false,
-                    showSubscript: false,
                     buttonOptions: quill.QuillSimpleToolbarButtonOptions(
                       base: quill.QuillToolbarBaseButtonOptions(
                         iconTheme: quill.QuillIconTheme(
                           iconButtonSelectedData: quill.IconButtonData(
                             color: CupertinoColors.black,
-                            iconSize: 20,
+                            iconSize: 22,
                           ),
                         ),
                       ),
